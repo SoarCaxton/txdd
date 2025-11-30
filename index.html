@@ -12,21 +12,22 @@
   .bg-count{position:absolute;inset:0;display:grid;place-items:center;font-weight:800;font-size:clamp(64px,14vw,220px);color:rgba(255,255,255,0.08);pointer-events:none}
   .ring{position:absolute;width:80px;height:80px;border-radius:50%;border:3px solid rgba(255,255,255,0.92);transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
   .heart{position:absolute;width:64px;height:64px;transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
-  /* 泪滴样式与动画 */
+  /* 泪滴样式与关键帧（与精简前逻辑一致） */
   .tear{
     position:absolute;
-    width:8px;
-    height:12px;
-    border-radius:50%;
+    width:6px;
+    height:10px;
     background:linear-gradient(180deg,#9fd6ff,#4da6ff);
+    border-radius:50%;
     box-shadow:0 3px 8px rgba(0,0,0,.25);
     pointer-events:none;
     transform-origin:center;
     will-change:transform,opacity;
+    opacity:1;
   }
   @keyframes cry {
-    0%   { opacity:1; transform: translate(0,0) scale(1); }
-    100% { opacity:0; transform: translate(var(--dx), var(--dy)) scale(0.9); }
+    from { opacity: 1; transform: translate(0,0) scale(1); }
+    to   { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.9); }
   }
 </style>
 </head>
@@ -57,8 +58,7 @@ const heart = {
   x: vw*0.33, y: vh/2,
   vx:0, vy:0, angle:0,
   grabbed:false,
-  centerTarget:null, centerT:0,
-  tearTimer: null // 周期性哭泣定时器
+  centerTarget:null, centerT:0
 };
 
 /* ---------- 常量 ---------- */
@@ -74,28 +74,31 @@ const len = (x,y)=>Math.hypot(x,y);
 const norm = (x,y)=>{ const L=len(x,y)||1; return {x:x/L,y:y/L}; };
 const setTransform = (el,x,y,rot=0)=>{ el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%,-50%) rotate(${rot}deg)`; };
 
-/* ---------- 泪滴（使用 CSS 动画） ---------- */
-function spawnTear(x,y,angleDeg){
+/* ---------- 恢复：原始泪滴逻辑（createTear + cryBurst） ---------- */
+function createTear(x, y, angleDeg) {
   const rad = angleDeg * Math.PI / 180;
   const dist = 44;
   const dx = Math.cos(rad) * dist;
   const dy = Math.sin(rad) * dist;
-  const el = document.createElement('div');
-  el.className = 'tear';
-  el.style.left = x + 'px';
-  el.style.top  = y + 'px';
-  el.style.setProperty('--dx', dx + 'px');
-  el.style.setProperty('--dy', dy + 'px');
-  // 触发 CSS 动画
-  el.style.animation = `cry 900ms ease-out forwards`;
-  stage.appendChild(el);
-  // 清理
-  setTimeout(()=>{ try{ el.remove(); }catch(e){} }, 920);
+  const tear = document.createElement('div');
+  tear.className = 'tear';
+  tear.style.left = x + 'px';
+  tear.style.top  = y + 'px';
+  tear.style.setProperty('--dx', dx + 'px');
+  tear.style.setProperty('--dy', dy + 'px');
+  // 使用 CSS 动画 keyframes cry（900ms）
+  tear.style.animation = 'cry 900ms ease-out forwards';
+  stage.appendChild(tear);
+  setTimeout(() => { try { tear.remove(); } catch(e) {} }, 920);
 }
-function cryBurst(){
-  if(!heart.grabbed) return; // 仅在被抓住时产生泪滴
-  spawnTear(heart.x - 10, heart.y - 15, -140 + Math.random()*40);
-  spawnTear(heart.x + 10, heart.y - 15, -40 + Math.random()*40);
+function cryBurst() {
+  const leftEyeX  = heart.x - 10;
+  const rightEyeX = heart.x + 10;
+  const eyeY      = heart.y - 15;
+  const angleL = -150 + (Math.random() * 60 - 30);
+  const angleR =  -30 + (Math.random() * 60 - 30);
+  createTear(leftEyeX,  eyeY, angleL);
+  createTear(rightEyeX, eyeY, angleR);
 }
 
 /* ---------- 计算辅助 ---------- */
@@ -122,22 +125,6 @@ function updateCenterTarget(){
   }
 }
 
-/* ---------- 管理哭泣定时器 ---------- */
-function startTearTimerIfNeeded(){
-  if(heart.tearTimer) return;
-  // 立即触发一次，让用户立刻看到泪滴
-  cryBurst();
-  heart.tearTimer = setInterval(()=>{
-    if(heart.grabbed && Math.random() < 0.18) cryBurst();
-  }, 900);
-}
-function stopTearTimer(){
-  if(heart.tearTimer){
-    clearInterval(heart.tearTimer);
-    heart.tearTimer = null;
-  }
-}
-
 /* ---------- 事件处理（Pointer Events 统一） ---------- */
 let lastPointerTime = 0;
 const POINTER_THROTTLE_MS = 8;
@@ -154,9 +141,7 @@ window.addEventListener('pointerup', ()=>{
   ring.dragging = false;
   if(heart.grabbed){
     heart.grabbed = false;
-    // 停止哭泣
-    stopTearTimer();
-    // 释放时给个初速度并设置逃逸目标
+    // 释放时设置逃逸目标并给初速度
     const L = computeL(); const P = computeP(L);
     heart.vx += (P.x - heart.x) * 0.02;
     heart.vy += (P.y - heart.y) * 0.02;
@@ -173,7 +158,7 @@ window.addEventListener('pointermove', e=>{
   setTransform(ringEl, ring.x, ring.y, 0);
 });
 
-/* ---------- 主循环 ---------- */
+/* ---------- 主循环（被抓时在循环中随机触发 cryBurst，与精简前逻辑一致） ---------- */
 function loop(){
   requestAnimationFrame(loop);
   vw = innerWidth; vh = innerHeight;
@@ -183,17 +168,18 @@ function loop(){
   const sensitivity = Math.min(1 + caught * SENS_PER_CATCH, 2.6);
 
   if(heart.grabbed){
+    // 被抓住：跟随并随机触发哭泣（与原始逻辑一致）
     heart.x = ring.x + (Math.random()*6 - 3);
     heart.y = ring.y + (Math.random()*6 - 3);
     heart.angle = Math.sin(Date.now()/80) * 12;
-    // 确保哭泣定时器在被抓住时运行
-    startTearTimerIfNeeded();
+    if (Math.random() < 0.18) cryBurst();
   } else {
     const catchTol = 6 + Math.floor(Math.min(caught,40)*1.2);
     if(ring.dragging && dist < (ring.radius - catchTol)){
       heart.grabbed = true;
       caught++; bgCount.textContent = caught;
-      startTearTimerIfNeeded();
+      // 立即触发一次哭泣（与原始行为一致：loop 中会随机触发，触发概率保留）
+      if (Math.random() < 0.5) cryBurst();
     } else {
       let fx=0, fy=0;
       const threat = BASE_THREAT * sensitivity;
