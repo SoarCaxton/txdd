@@ -2,16 +2,18 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
 <title>偷心大盗</title>
 <style>
   html,body{height:100%;margin:0;background:
     radial-gradient(1200px 700px at 50% 35%, rgba(80,110,180,0.98), transparent 20%),
-    linear-gradient(180deg,#14182b,#0b0f1a);color:#ddd;font-family:system-ui,Arial;overflow:hidden;cursor:none}
-  .stage{position:relative;width:100%;height:100%}
+    linear-gradient(180deg,#14182b,#0b0f1a);color:#ddd;font-family:system-ui,Arial;overflow:hidden}
+  .stage{position:relative;width:100%;height:100%;touch-action:none;-webkit-user-select:none;user-select:none}
   .bg-count{position:absolute;inset:0;display:grid;place-items:center;font-weight:800;font-size:clamp(64px,14vw,220px);color:rgba(255,255,255,0.08);pointer-events:none}
-  .ring{position:absolute;width:80px;height:80px;border-radius:50%;border:3px solid rgba(255,255,255,0.92);transform:translate(-50%,-50%);pointer-events:none}
-  .heart{position:absolute;width:64px;height:64px;transform:translate(-50%,-50%);pointer-events:none;will-change:transform,left,top}
+  /* ring 使用 transform 更新位置（GPU） */
+  .ring{position:absolute;width:80px;height:80px;border-radius:50%;border:3px solid rgba(255,255,255,0.92);transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
+  /* heart 使用 transform 更新位置与旋转（GPU） */
+  .heart{position:absolute;width:64px;height:64px;transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
   .tear{position:absolute;width:6px;height:10px;border-radius:50%;background:linear-gradient(#9fd6ff,#4da6ff);pointer-events:none;box-shadow:0 3px 8px rgba(0,0,0,.25)}
 </style>
 </head>
@@ -20,12 +22,15 @@
   <div class="bg-count" id="bgCount">0</div>
   <div id="ring" class="ring" aria-hidden="true"></div>
   <div id="heart" class="heart" aria-hidden="true">
-    <svg viewBox="0 0 64 64"><defs><radialGradient id="g" cx="50%" cy="40%" r="60%"><stop offset="0%" stop-color="#ffccd6"/><stop offset="60%" stop-color="#ff6b8a"/><stop offset="100%" stop-color="#a0002a"/></radialGradient></defs><path d="M32 57 C30 55,10 40,7 27 C5 18,10 7,21 7 C27 7,32 12,32 14 C32 12,37 7,43 7 C54 7,59 18,57 27 C54 40,34 55,32 57 Z" fill="url(#g)"/></svg>
+    <svg viewBox="0 0 64 64" width="100%" height="100%" aria-hidden="true" focusable="false">
+      <defs><radialGradient id="g" cx="50%" cy="40%" r="60%"><stop offset="0%" stop-color="#ffccd6"/><stop offset="60%" stop-color="#ff6b8a"/><stop offset="100%" stop-color="#a0002a"/></radialGradient></defs>
+      <path d="M32 57 C30 55,10 40,7 27 C5 18,10 7,21 7 C27 7,32 12,32 14 C32 12,37 7,43 7 C54 7,59 18,57 27 C54 40,34 55,32 57 Z" fill="url(#g)"/>
+    </svg>
   </div>
 </div>
 
 <script>
-/* 简洁状态 */
+/* ---------- 状态 ---------- */
 const stage = document.getElementById('stage');
 const ringEl = document.getElementById('ring');
 const heartEl = document.getElementById('heart');
@@ -34,28 +39,27 @@ const bgCount = document.getElementById('bgCount');
 let vw = innerWidth, vh = innerHeight;
 let caught = 0;
 
-const ring = { x: vw/2, y: vh/2, px: vw/2, py: vh/2, vx:0, vy:0, dragging:false, radius:40 };
+const ring = { x: vw/2, y: vh/2, px: vw/2, py: vh/2, vx:0, vy:0, dragging:false, radius:40, locked:false };
 const heart = { x: vw*0.33, y: vh/2, vx:0, vy:0, angle:0, grabbed:false, centerTarget:null, centerT:0 };
 
-/* 小工具 */
-const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
-const len = (x,y)=>Math.hypot(x,y);
-const norm = (x,y)=>{ const L=len(x,y)||1; return {x:x/L,y:y/L}; };
-const setPos = (el,x,y)=>{ el.style.left = x+'px'; el.style.top = y+'px'; };
-
-/* 参数 */
+/* ---------- 常量 ---------- */
 const BASE_THREAT = 170;
 const BASE_SAFE = 260;
 const SENS_PER_CATCH = 0.06;
 const CENTER_REFRESH = 300;
 const CENTER_RADIUS_RATIO = 0.12;
 
-/* 泪滴（临时、轻量） */
+/* ---------- 工具 ---------- */
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const len = (x,y)=>Math.hypot(x,y);
+const norm = (x,y)=>{ const L=len(x,y)||1; return {x:x/L,y:y/L}; };
+const setTransform = (el,x,y,rot=0)=>{ el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%,-50%) rotate(${rot}deg)`; };
+
+/* ---------- 泪滴（轻量） ---------- */
 function spawnTear(x,y,angle){
   const el = document.createElement('div'); el.className='tear';
-  el.style.left = x+'px'; el.style.top = y+'px';
+  el.style.left = x + 'px'; el.style.top = y + 'px';
   const rad = angle*Math.PI/180, dx=Math.cos(rad)*36, dy=Math.sin(rad)*36;
-  el.style.setProperty('--dx', dx+'px'); el.style.setProperty('--dy', dy+'px');
   el.animate([{opacity:1, transform:'translate(0,0)'},{opacity:0, transform:`translate(${dx}px,${dy}px)`}],{duration:800,easing:'ease-out'});
   stage.appendChild(el); setTimeout(()=>el.remove(),820);
 }
@@ -64,7 +68,7 @@ function cryBurst(){
   spawnTear(heart.x+10, heart.y-15, -40 + Math.random()*40);
 }
 
-/* 计算 L 与圆周点（保留原意） */
+/* ---------- 计算辅助 ---------- */
 function computeL(){
   const screenHalf = Math.min(vw,vh)/2;
   const raw = 120 * Math.pow(1.5, Math.max(0, caught-1));
@@ -76,11 +80,8 @@ function computeP(L){
   let dx = heart.x - cx, dy = heart.y - cy, d = len(dx,dy);
   if(d < 1e-6){ const a=Math.random()*Math.PI*2; return {x:cx+Math.cos(a)*L,y:cy+Math.sin(a)*L}; }
   const u = norm(dx,dy);
-  const tx = cx + u.x * L, ty = cy + u.y * L;
-  return { x: clamp(tx,20,vw-20), y: clamp(ty,20,vh-20) };
+  return { x: clamp(cx + u.x*L, 20, vw-20), y: clamp(cy + u.y*L, 20, vh-20) };
 }
-
-/* 中心附近随机点（短时） */
 function updateCenterTarget(){
   const now = Date.now();
   if(!heart.centerTarget || now - heart.centerT > CENTER_REFRESH){
@@ -91,23 +92,41 @@ function updateCenterTarget(){
   }
 }
 
-/* 事件（pointer 简化） */
+/* ---------- 事件处理（Pointer Events 统一） ---------- */
+let lastPointerTime = 0;
+const POINTER_THROTTLE_MS = 8; // 节流，移动端每 ~8ms 更新一次
+
 stage.addEventListener('pointerdown', e=>{
+  if(ring.locked) return;
   const r = ringEl.getBoundingClientRect();
   if(e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom){
-    ring.dragging = true; e.preventDefault();
+    ring.dragging = true;
+    e.preventDefault();
   }
 });
-window.addEventListener('pointerup', ()=>{ ring.dragging = false; if(heart.grabbed){ heart.grabbed=false; const L=computeL(); const P=computeP(L); heart.vx += (P.x-heart.x)*0.02; heart.vy += (P.y-heart.y)*0.02; }});
+window.addEventListener('pointerup', ()=>{
+  ring.dragging = false;
+  if(heart.grabbed){
+    heart.grabbed = false;
+    // 释放时给个初速度并设置逃逸目标
+    const L = computeL(); const P = computeP(L);
+    heart.vx += (P.x - heart.x) * 0.02;
+    heart.vy += (P.y - heart.y) * 0.02;
+  }
+});
 window.addEventListener('pointermove', e=>{
-  if(!ring.dragging) return;
+  const now = performance.now();
+  if(now - lastPointerTime < POINTER_THROTTLE_MS) return;
+  lastPointerTime = now;
+  if(!ring.dragging || ring.locked) return;
   ring.px = ring.x; ring.py = ring.y;
-  ring.x = clamp(e.clientX,0,vw); ring.y = clamp(e.clientY,0,vh);
+  ring.x = clamp(e.clientX, 0, vw); ring.y = clamp(e.clientY, 0, vh);
   ring.vx = ring.x - ring.px; ring.vy = ring.y - ring.py;
-  setPos(ringEl, ring.x, ring.y);
+  // GPU transform update
+  setTransform(ringEl, ring.x, ring.y, 0);
 });
 
-/* 主循环（精简版） */
+/* ---------- 主循环 ---------- */
 function loop(){
   requestAnimationFrame(loop);
   vw = innerWidth; vh = innerHeight;
@@ -117,16 +136,15 @@ function loop(){
   const sensitivity = Math.min(1 + caught * SENS_PER_CATCH, 2.6);
 
   if(heart.grabbed){
-    heart.x = ring.x + (Math.random()*6-3);
-    heart.y = ring.y + (Math.random()*6-3);
-    heart.angle = Math.sin(Date.now()/80)*12;
+    heart.x = ring.x + (Math.random()*6 - 3);
+    heart.y = ring.y + (Math.random()*6 - 3);
+    heart.angle = Math.sin(Date.now()/80) * 12;
     if(Math.random() < 0.18) cryBurst();
   } else {
     const catchTol = 6 + Math.floor(Math.min(caught,40)*1.2);
     if(ring.dragging && dist < (ring.radius - catchTol)){
       heart.grabbed = true; caught++; bgCount.textContent = caught;
     } else {
-      // 基本逃跑力
       let fx=0, fy=0;
       const threat = BASE_THREAT * sensitivity;
       if(dist < threat){
@@ -144,7 +162,7 @@ function loop(){
         fy += (Math.random()-0.5) * (160 * sensitivity);
       }
 
-      // 若 ring 在屏幕外中间区域外，对中心附近随机点施加弱吸引
+      // 如果 ring 在屏幕中心区域外，对中心附近随机点施加弱吸引（实时随机点）
       const centerW = vw*0.4, centerH = vh*0.4;
       const left = (vw - centerW)/2, top = (vh - centerH)/2;
       const outside = ring.x < left || ring.x > left + centerW || ring.y < top || ring.y > top + centerH;
@@ -158,7 +176,6 @@ function loop(){
         heart.centerTarget = null;
       }
 
-      // 目标与移动
       const steer = norm(fx,fy);
       const safeDist = BASE_SAFE * (1 + (sensitivity-1)*0.6);
       heart.tx = heart.x + steer.x * safeDist;
@@ -172,7 +189,6 @@ function loop(){
       heart.x += heart.vx; heart.y += heart.vy;
       heart.angle = Math.sin(Date.now()/140) * 6;
 
-      // keep visible
       if(heart.x < 0) heart.x += vw;
       if(heart.x > vw) heart.x -= vw;
       if(heart.y < 0) heart.y += vh;
@@ -180,17 +196,19 @@ function loop(){
     }
   }
 
-  setPos(heartEl, heart.x, heart.y);
-  heartEl.style.transform = `translate(-50%,-50%) rotate(${heart.angle}deg)`;
-  setPos(ringEl, ring.x, ring.y);
+  // GPU 更新
+  setTransform(heartEl, heart.x, heart.y, heart.angle);
+  // ring already updated in pointermove; ensure initial placement
+  setTransform(ringEl, ring.x, ring.y, 0);
 }
 requestAnimationFrame(loop);
 
-/* init */
-setPos(ringEl, ring.x, ring.y);
-setPos(heartEl, heart.x, heart.y);
+/* ---------- 初始化 ---------- */
+setTransform(ringEl, ring.x, ring.y, 0);
+setTransform(heartEl, heart.x, heart.y, 0);
 bgCount.textContent = caught;
 window.addEventListener('resize', ()=>{ vw = innerWidth; vh = innerHeight; });
+
 </script>
 </body>
 </html>
