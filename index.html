@@ -3,16 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-<title>偷心大盗</title>
+<title>偷心大盗（纯红桃心，修复哭泣 BUG，移动兼容）</title>
 <style>
   html,body{height:100%;margin:0;background:
     radial-gradient(1200px 700px at 50% 35%, rgba(80,110,180,0.98), transparent 20%),
     linear-gradient(180deg,#14182b,#0b0f1a);color:#ddd;font-family:system-ui,Arial;overflow:hidden}
   .stage{position:relative;width:100%;height:100%;touch-action:none;-webkit-user-select:none;user-select:none}
   .bg-count{position:absolute;inset:0;display:grid;place-items:center;font-weight:800;font-size:clamp(64px,14vw,220px);color:rgba(255,255,255,0.08);pointer-events:none}
-  /* ring 使用 transform 更新位置（GPU） */
   .ring{position:absolute;width:80px;height:80px;border-radius:50%;border:3px solid rgba(255,255,255,0.92);transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
-  /* heart 使用 transform 更新位置与旋转（GPU） */
   .heart{position:absolute;width:64px;height:64px;transform:translate3d(-50%,-50%,0);will-change:transform;pointer-events:none}
   .tear{position:absolute;width:6px;height:10px;border-radius:50%;background:linear-gradient(#9fd6ff,#4da6ff);pointer-events:none;box-shadow:0 3px 8px rgba(0,0,0,.25)}
 </style>
@@ -22,9 +20,9 @@
   <div class="bg-count" id="bgCount">0</div>
   <div id="ring" class="ring" aria-hidden="true"></div>
   <div id="heart" class="heart" aria-hidden="true">
+    <!-- 纯红色桃心 -->
     <svg viewBox="0 0 64 64" width="100%" height="100%" aria-hidden="true" focusable="false">
-      <defs><radialGradient id="g" cx="50%" cy="40%" r="60%"><stop offset="0%" stop-color="#ffccd6"/><stop offset="60%" stop-color="#ff6b8a"/><stop offset="100%" stop-color="#a0002a"/></radialGradient></defs>
-      <path d="M32 57 C30 55,10 40,7 27 C5 18,10 7,21 7 C27 7,32 12,32 14 C32 12,37 7,43 7 C54 7,59 18,57 27 C54 40,34 55,32 57 Z" fill="url(#g)"/>
+      <path d="M32 57 C30 55,10 40,7 27 C5 18,10 7,21 7 C27 7,32 12,32 14 C32 12,37 7,43 7 C54 7,59 18,57 27 C54 40,34 55,32 57 Z" fill="#ff0000"/>
     </svg>
   </div>
 </div>
@@ -40,7 +38,13 @@ let vw = innerWidth, vh = innerHeight;
 let caught = 0;
 
 const ring = { x: vw/2, y: vh/2, px: vw/2, py: vh/2, vx:0, vy:0, dragging:false, radius:40, locked:false };
-const heart = { x: vw*0.33, y: vh/2, vx:0, vy:0, angle:0, grabbed:false, centerTarget:null, centerT:0 };
+const heart = {
+  x: vw*0.33, y: vh/2,
+  vx:0, vy:0, angle:0,
+  grabbed:false,
+  centerTarget:null, centerT:0,
+  tearTimer: null // 用于周期性哭泣的定时器句柄
+};
 
 /* ---------- 常量 ---------- */
 const BASE_THREAT = 170;
@@ -55,7 +59,7 @@ const len = (x,y)=>Math.hypot(x,y);
 const norm = (x,y)=>{ const L=len(x,y)||1; return {x:x/L,y:y/L}; };
 const setTransform = (el,x,y,rot=0)=>{ el.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%,-50%) rotate(${rot}deg)`; };
 
-/* ---------- 泪滴（轻量） ---------- */
+/* ---------- 泪滴（仅在被抓住期间触发） ---------- */
 function spawnTear(x,y,angle){
   const el = document.createElement('div'); el.className='tear';
   el.style.left = x + 'px'; el.style.top = y + 'px';
@@ -64,6 +68,8 @@ function spawnTear(x,y,angle){
   stage.appendChild(el); setTimeout(()=>el.remove(),820);
 }
 function cryBurst(){
+  // 仅在确实被抓住时产生泪滴
+  if(!heart.grabbed) return;
   spawnTear(heart.x-10, heart.y-15, -140 + Math.random()*40);
   spawnTear(heart.x+10, heart.y-15, -40 + Math.random()*40);
 }
@@ -92,9 +98,24 @@ function updateCenterTarget(){
   }
 }
 
+/* ---------- 管理哭泣定时器 ---------- */
+function startTearTimerIfNeeded(){
+  if(heart.tearTimer) return;
+  // 周期性尝试哭泣，但 cryBurst 内部会检查 heart.grabbed
+  heart.tearTimer = setInterval(()=>{
+    if(heart.grabbed && Math.random() < 0.18) cryBurst();
+  }, 900);
+}
+function stopTearTimer(){
+  if(heart.tearTimer){
+    clearInterval(heart.tearTimer);
+    heart.tearTimer = null;
+  }
+}
+
 /* ---------- 事件处理（Pointer Events 统一） ---------- */
 let lastPointerTime = 0;
-const POINTER_THROTTLE_MS = 8; // 节流，移动端每 ~8ms 更新一次
+const POINTER_THROTTLE_MS = 8;
 
 stage.addEventListener('pointerdown', e=>{
   if(ring.locked) return;
@@ -106,9 +127,10 @@ stage.addEventListener('pointerdown', e=>{
 });
 window.addEventListener('pointerup', ()=>{
   ring.dragging = false;
+  // 释放时确保停止哭泣并让心逃跑
   if(heart.grabbed){
     heart.grabbed = false;
-    // 释放时给个初速度并设置逃逸目标
+    stopTearTimer();
     const L = computeL(); const P = computeP(L);
     heart.vx += (P.x - heart.x) * 0.02;
     heart.vy += (P.y - heart.y) * 0.02;
@@ -122,7 +144,6 @@ window.addEventListener('pointermove', e=>{
   ring.px = ring.x; ring.py = ring.y;
   ring.x = clamp(e.clientX, 0, vw); ring.y = clamp(e.clientY, 0, vh);
   ring.vx = ring.x - ring.px; ring.vy = ring.y - ring.py;
-  // GPU transform update
   setTransform(ringEl, ring.x, ring.y, 0);
 });
 
@@ -139,11 +160,15 @@ function loop(){
     heart.x = ring.x + (Math.random()*6 - 3);
     heart.y = ring.y + (Math.random()*6 - 3);
     heart.angle = Math.sin(Date.now()/80) * 12;
-    if(Math.random() < 0.18) cryBurst();
+    // 启动哭泣定时器（仅在被抓住时）
+    startTearTimerIfNeeded();
   } else {
     const catchTol = 6 + Math.floor(Math.min(caught,40)*1.2);
     if(ring.dragging && dist < (ring.radius - catchTol)){
-      heart.grabbed = true; caught++; bgCount.textContent = caught;
+      heart.grabbed = true;
+      caught++; bgCount.textContent = caught;
+      // 启动哭泣定时器
+      startTearTimerIfNeeded();
     } else {
       let fx=0, fy=0;
       const threat = BASE_THREAT * sensitivity;
@@ -162,7 +187,6 @@ function loop(){
         fy += (Math.random()-0.5) * (160 * sensitivity);
       }
 
-      // 如果 ring 在屏幕中心区域外，对中心附近随机点施加弱吸引（实时随机点）
       const centerW = vw*0.4, centerH = vh*0.4;
       const left = (vw - centerW)/2, top = (vh - centerH)/2;
       const outside = ring.x < left || ring.x > left + centerW || ring.y < top || ring.y > top + centerH;
@@ -198,7 +222,6 @@ function loop(){
 
   // GPU 更新
   setTransform(heartEl, heart.x, heart.y, heart.angle);
-  // ring already updated in pointermove; ensure initial placement
   setTransform(ringEl, ring.x, ring.y, 0);
 }
 requestAnimationFrame(loop);
